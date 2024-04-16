@@ -1,0 +1,118 @@
+---
+title: "Phân tích mô tả các subgroup"
+author: "Minh"
+date: "2024-02-28"
+output:
+  word_document: default
+  html_document:
+    keep_md: yes
+  pdf_document: default
+params:
+  warning: no
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.width = 12, fig.height = 6, fig.asp = 0.75, warning = FALSE, message = FALSE)
+```
+
+```{r}
+options(warn = -1)
+```
+
+## Load bộ số liệu và các packages
+
+```{r}
+library(tidyverse)
+library(gtsummary)
+library(rstatix)
+library(readxl)
+library(boot)
+library(forestplot)
+d <- read_excel("C:/Users/Admin/OneDrive/NC_Quangpho/Data_regardless_sleep_18_03.xlsx")
+View(d)
+
+d$BMI_25_30 <- ifelse(d$BMI_index < 25, 1, 
+                         ifelse(d$BMI_index >= 25 & d$BMI_index < 30, 2, 3))
+d$Age_stage <- ifelse(d$Age <= 30, 1, 
+                         ifelse(d$Age >= 30 & d$Age < 40, 2, ifelse(d$Age >= 40 & d$Age < 50, 3,4)))
+d$Gender <- ifelse(d$Gender == 0, "female", ifelse(d$Gender == 1, "male", NA))
+d$Race <- d$`6. Race`
+d <- d %>%
+  mutate(Age_stage = case_when(
+    Age_stage == 1 ~ "Age <30",
+    Age_stage == 2 ~ "Age [30-40)",
+    Age_stage == 3 ~ "Age [40-50)",
+    Age_stage == 4 ~ "Age >=50",
+    TRUE ~ NA_character_  # This line handles any unexpected values
+  ))
+d$Hypertension <- ifelse(d$Hypertension == 0, "No", ifelse(d$Hypertension == 1, "Yes", NA))
+d$`Stress index` <- ifelse(d$`Stress index` == 0, "No", ifelse(d$`Stress index` == 1, "Yes", NA))
+d$Obesity <- ifelse(d$Obesity == 0, "No", ifelse(d$Obesity == 1, "Yes", NA))
+d <- d %>%
+  mutate(BMI_25_30 = case_when(
+    BMI_25_30 == 1 ~ "BMI <25",
+    BMI_25_30 == 2 ~ "BMI [25-30)",
+    BMI_25_30 == 3 ~ "BMI >=30",
+    TRUE ~ NA_character_  # This line handles any unexpected values
+  ))
+d$Smoking <- ifelse(d$Smoking == "Do not smoke", "Non smoker", ifelse(d$Smoking == "Cigarettes, pipe tobacco...", "Smoker", NA))
+```
+
+
+```{r}
+Tab1 <- d %>% select("Gender", "Age_stage", "Race", "Typer of skins", "Stress index", "Smoking", "Hypertension","BMI_25_30", "Obesity") %>% 
+  tbl_summary(
+    digits = list(all_categorical() ~ c(0, 1))
+  )
+Tab1
+```
+
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(purrr)
+
+describe_subgroup <- function(data, subgroup, variables) {
+  # Convert list columns to numeric if they are meant to be included in the variables
+  for (variable in variables) {
+    if (is.list(data[[variable]])) {
+      data[[variable]] <- unlist(data[[variable]])
+    }
+  }
+  
+  map_dfr(variables, function(variable) {
+    data %>%
+      group_by(.data[[subgroup]]) %>%
+      summarise(
+        subgroup = subgroup,
+        variable = variable,
+        n = n(),
+        percentage = round(n()/ 79 *100,2),
+        mean = mean(.data[[variable]], na.rm = TRUE),
+        CI_lower = quantile(.data[[variable]], probs = 0.025, na.rm = TRUE),
+        CI_upper = quantile(.data[[variable]], probs = 0.975, na.rm = TRUE),
+        .groups = 'drop'
+      ) %>%
+      mutate(mean_CI = sprintf("%s (%s - %s)", round(mean, 2), round(CI_lower, 2), round(CI_upper, 2))) %>%
+      select(-mean, -CI_lower, -CI_upper)
+  }) %>%
+  pivot_wider(names_from = variable, values_from = mean_CI, names_sep = "_") %>%
+  select(subgroup, everything()) %>% rename_at(2, ~ "Level") %>% mutate(Level = as.character(Level))
+}
+```
+
+```{r}
+variables <- c("M_mean", "Kv100_mean", "δ_mean", "T_mean", "A365_mean", "A460_mean", "Anadn_mean", "POM_mean", "A-E_mean", "A-N_mean", "A-M_mean", "A-R_mean", "A-C_mean", "F-E_mean", "F-N_mean", "F-M_mean", "F-R_mean", "F-C_mean")
+
+subgroups <- c("Gender", "Age_stage", "Race", "Typer of skins", "Stress index", "Smoking", "DASS_21", "Stress", "Anxiety", "Hypertension","BMI_25_30", "Obesity", "All")
+```
+
+
+
+
+```{r}
+final_table <- map_dfr(subgroups, ~ describe_subgroup(d, .x, variables))
+final_table %>% knitr::kable()
+```
+

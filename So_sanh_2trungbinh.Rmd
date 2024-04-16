@@ -1,0 +1,179 @@
+---
+title: "Phan tich mean hand Wilcox test"
+author: "Minh"
+date: "2024-03-25"
+output:
+  html_document:
+    keep_md: yes
+  pdf_document: default
+  word_document: default
+params:
+  warning: no
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+```{r}
+options(warn = -1)
+```
+
+## Load bộ số liệu và các packages
+
+```{r}
+library(tidyverse)
+library(gtsummary)
+library(rstatix)
+library(readxl)
+d <- read_excel("C:/Users/Admin/OneDrive/NC_Quangpho/Data_regardless_sleep_18_03.xlsx")
+View(d)
+
+d$BMI_25_30 <- ifelse(d$BMI_index < 25, 1, 
+                         ifelse(d$BMI_index >= 25 & d$BMI_index < 30, 2, 3))
+d$Age_stage <- ifelse(d$Age <= 30, 1, 
+                         ifelse(d$Age >= 30 & d$Age < 40, 2, ifelse(d$Age >= 40 & d$Age < 50, 3,4)))
+d$Gender <- ifelse(d$Gender == 0, "female", ifelse(d$Gender == 1, "male", NA))
+d$Race <- d$`6. Race`
+d <- d %>%
+  mutate(Age_stage = case_when(
+    Age_stage == 1 ~ "Age <30",
+    Age_stage == 2 ~ "Age [30-40)",
+    Age_stage == 3 ~ "Age [40-50)",
+    Age_stage == 4 ~ "Age >=50",
+    TRUE ~ NA_character_  # This line handles any unexpected values
+  ))
+d$Hypertension <- ifelse(d$Hypertension == 0, "No", ifelse(d$Hypertension == 1, "Yes", NA))
+d$`Stress index` <- ifelse(d$`Stress index` == 0, "No", ifelse(d$`Stress index` == 1, "Yes", NA))
+d$Obesity <- ifelse(d$Obesity == 0, "No", ifelse(d$Obesity == 1, "Yes", NA))
+d <- d %>%
+  mutate(BMI_25_30 = case_when(
+    BMI_25_30 == 1 ~ "BMI <25",
+    BMI_25_30 == 2 ~ "BMI [25-30)",
+    BMI_25_30 == 3 ~ "BMI >=30",
+    TRUE ~ NA_character_  # This line handles any unexpected values
+  ))
+d$Smoking <- ifelse(d$Smoking == "Do not smoke", "Non smoker", ifelse(d$Smoking == "Cigarettes, pipe tobacco...", "Smoker", NA))
+d$Migraine <- ifelse(d$Migraine == 0, "No migraine", ifelse(d$Migraine == 1, "Migraine", NA))
+```
+
+## So sánh khác biệt về trung bình của chỉ số 2 tay theo các subgroup
+
+
+
+
+Tạo hàm so sánh trung bình bằng Wilcox.test nếu subgroup có 2 level
+```{r}
+compare_means <- function(data, subgroup, variable) {
+  # Split data into subgroups
+  subgroup_levels <- unique(data[[subgroup]])
+  results <- data.frame(Subgroup = subgroup_levels, n = NA, Mean = NA, CI_lower = NA, CI_upper = NA)
+
+  # Loop through each subgroup to calculate mean, n, and 95% CI using t-distribution
+  for (i in 1:length(subgroup_levels)) {
+    subgroup_data <- data[data[[subgroup]] == subgroup_levels[i], variable, drop = FALSE]
+    n <- nrow(subgroup_data)
+    mean_value <- mean(subgroup_data[[variable]], na.rm = TRUE)
+    sd_value <- sd(subgroup_data[[variable]], na.rm = TRUE)
+    se <- sd_value / sqrt(n)
+
+    # 95% CI calculation using t-distribution
+    t_value <- qt(0.975, df = n - 1)  # t-value for 95% CI and n-1 degrees of freedom
+    ci <- t_value * se
+    lower_ci <- mean_value - ci
+    upper_ci <- mean_value + ci
+    
+    results[i, "n"] <- n
+    results[i, "Mean"] <- mean_value
+    results[i, "CI_lower"] <- lower_ci
+    results[i, "CI_upper"] <- upper_ci
+  }
+  
+  # Check if there are more than two subgroups
+  if (length(subgroup_levels) > 2) {
+    results$P_Value <- NA
+  } else if (length(subgroup_levels) == 2) {
+    # If exactly two subgroups, perform Wilcoxon signed-rank test and add p-values to the results
+    test_result <- wilcox.test(data[[variable]] ~ data[[subgroup]], data = data)
+    results$P_Value <- rep(test_result$p.value, nrow(results))
+  } else {
+    # If only one subgroup, no comparison is needed
+    results$P_Value <- NA
+    message("Only one subgroup detected. No comparison needed.")
+  }
+  
+  return(results)
+}
+
+```
+
+```{r}
+compare_means(d, "Migraine", "M_mean")
+```
+
+
+Tạo hàm so sánh bắt cặp các trung bình bằng Wilcox.pairwise test nếu group có >2 level
+
+```{r}
+perform_pairwise_wilcox <- function(data, group_list,variable) {
+  results_list <- list()
+  
+  for (group in group_list) {
+    group_data <- data[[group]]
+    unique_groups <- unique(group_data)
+    
+    if (length(unique_groups) > 2) {
+      # Generate all unique pairs
+      group_pairs <- combn(unique_groups, 2, simplify = FALSE)
+      
+      # Initialize an empty data frame to store results
+      group_results <- data.frame(Group1 = character(), Group2 = character(), P_Value = numeric(), stringsAsFactors = FALSE)
+      
+      for (pair in group_pairs) {
+        # Subset data for each group in the pair
+        data1 <- data[group_data == pair[1], variable, drop = FALSE]
+        data2 <- data[group_data == pair[2], variable, drop = FALSE]
+        
+        # Perform Wilcoxon test
+        test_result <- wilcox.test(data1[[variable]], data2[[variable]])
+        
+        # Store the results
+        group_results <- rbind(group_results, data.frame(Group1 = pair[1], Group2 = pair[2], P_Value = test_result$p.value, stringsAsFactors = FALSE))
+      }
+      
+      # Add group information to the results and make it the first column
+      group_results <- cbind(Group = group, group_results)
+      
+      results_list[[group]] <- group_results
+    } else {
+      message(paste("Group", group, "does not have more than 2 unique levels. Skipping."))
+    }
+  }
+  
+  # Combine all results into a single dataframe
+  final_results <- do.call(rbind, results_list)
+  # Adjust the row names to avoid duplication
+  rownames(final_results) <- NULL
+  
+  return(final_results)
+}
+
+```
+
+
+
+
+ 
+
+```{r}
+subgroup_list <- c("Migraine", "Gender", "Age_stage", "Race","Typer of skins", "Stress index", "Smoking", "DASS_21",  "Stress" , "Anxiety", "Hypertension", "BMI_25_30", "Obesity" )
+```
+```{r}
+List_var <- c("M_mean", "Kv100_mean", "δ_mean", "T_mean", "A365_mean", "A460_mean", "Anadn_mean", "POM_mean", "A-E_mean", "A-N_mean", "A-M_mean", "A-R_mean", "A-C_mean", "F-E_mean", "F-N_mean", "F-M_mean", "F-R_mean", "F-C_mean")
+```
+
+
+```{r}
+perform_pairwise_wilcox(d,"Age_stage", "M_mean") 
+```
+
+

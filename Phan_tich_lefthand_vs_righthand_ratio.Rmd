@@ -1,0 +1,417 @@
+---
+title: "Phan tich Forest plot của right hand/left hand ratio"
+author: "Minh"
+date: "2024-02-28"
+output:
+  word_document: default
+  html_document:
+    keep_md: yes
+  pdf_document: default
+params:
+  warning: no
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+```{r}
+options(warn = -1)
+```
+
+
+## Load bộ số liệu và các packages
+
+```{r}
+library(tidyverse)
+library(gtsummary)
+library(rstatix)
+library(readxl)
+library(boot)
+library(forestplot)
+d <- read_excel("C:/Users/Admin/OneDrive/NC_Quangpho/Data_regardless_sleep_18_03.xlsx")
+View(d)
+
+d$BMI_25_30 <- ifelse(d$BMI_index < 25, 1, 
+                         ifelse(d$BMI_index >= 25 & d$BMI_index < 30, 2, 3))
+d$Age_stage <- ifelse(d$Age <= 30, 1, 
+                         ifelse(d$Age >= 30 & d$Age < 40, 2, ifelse(d$Age >= 40 & d$Age < 50, 3,4)))
+d$Gender <- ifelse(d$Gender == 0, "female", ifelse(d$Gender == 1, "male", NA))
+d$Race <- d$`6. Race`
+d <- d %>%
+  mutate(Age_stage = case_when(
+    Age_stage == 1 ~ "Age <30",
+    Age_stage == 2 ~ "Age [30-40)",
+    Age_stage == 3 ~ "Age [40-50)",
+    Age_stage == 4 ~ "Age >=50",
+    TRUE ~ NA_character_  # This line handles any unexpected values
+  ))
+d$Hypertension <- ifelse(d$Hypertension == 0, "No", ifelse(d$Hypertension == 1, "Yes", NA))
+d$`Stress index` <- ifelse(d$`Stress index` == 0, "No", ifelse(d$`Stress index` == 1, "Yes", NA))
+d$Obesity <- ifelse(d$Obesity == 0, "No", ifelse(d$Obesity == 1, "Yes", NA))
+d <- d %>%
+  mutate(BMI_25_30 = case_when(
+    BMI_25_30 == 1 ~ "BMI <25",
+    BMI_25_30 == 2 ~ "BMI [25-30)",
+    BMI_25_30 == 3 ~ "BMI >=30",
+    TRUE ~ NA_character_  # This line handles any unexpected values
+  ))
+d$Smoking <- ifelse(d$Smoking == "Do not smoke", "Non smoker", ifelse(d$Smoking == "Cigarettes, pipe tobacco...", "Smoker", NA))
+```
+
+## So sánh khác biệt về ratio của chỉ số Right index/ Left index theo các biến
+
+```{r}
+
+# List of variables to iterate over
+vars <- c("M", "Kv100", "δ", "T", "A365", "A460", "Anadn", "POM", "A-E", "A-N", "A-M", "A-R", "A-C", "F-E", "F-N", "F-M", "F-R", "F-C")
+subgroups <- c("Gender", "Age_stage", "Race", "Typer of skins", "Stress index", "Smoking", "Hypertension","BMI_25_30", "Obesity")
+```
+
+Hàm để so sánh lograrit(right/left) với 0 bằng Wilcox test 
+```{r}
+wilcox_test_func <- function(data, var) {
+  ratio <- data[[paste0(var, "_right")]] / data[[paste0(var, "_left")]]
+  logtrans <- log(ratio)
+  logtrans <- logtrans[!is.infinite(logtrans)]  # Remove infinite values
+  
+  # Bootstrap function to get the median
+  boot_func <- function(data, indices) {
+    sample_data <- data[indices]  # Resample with replacement
+    return(median(sample_data, na.rm = TRUE))
+  }
+
+  # Apply bootstrap
+  boot_results <- boot(logtrans, boot_func, R = 1000)  # Increase R for more accuracy
+  ci <- boot.ci(boot_results, type = "perc")$percent[4:5]
+
+  # Convert log CI back to ratio
+  ci_ratio <- exp(ci)
+
+  test_result <- wilcox.test(logtrans, mu = 0, paired = FALSE, exact = FALSE)
+  
+  return(data.frame(
+    Median_Ratio = median(ratio, na.rm = TRUE),
+    CI_Lower = ci_ratio[1],
+    CI_Upper = ci_ratio[2],
+    P_Value = test_result$p.value
+  ))
+}
+```
+
+
+Hàm để tạo bảng tổng hợp kết quả và p-value
+
+```{r}
+# Function to apply Wilcoxon test across variables for a single subgroup
+create_table_for_subgroup <- function(data, vars, subgroup) {
+  results_list <- list()
+  
+  subgroup_levels <- unique(data[[subgroup]])
+  
+  for(subgroup_level in subgroup_levels) {
+    for(var in vars) {
+      subgroup_data <- data[data[[subgroup]] == subgroup_level, ]
+      
+      if(nrow(subgroup_data) > 0) {
+        result <- wilcox_test_func(subgroup_data, var)
+        result$Subgroup <- subgroup
+        result$Subgroup_Level <- as.character(subgroup_level)
+        result$Variable <- var
+        results_list[[paste(subgroup, subgroup_level, var, sep = "_")]] <- result
+      }
+    }
+  }
+  
+  results <- do.call(rbind, results_list)
+  results <- results[, c("Variable", "Subgroup", "Subgroup_Level", "Median_Ratio", "CI_Lower", "CI_Upper", "P_Value")]
+  
+  return(results)
+}
+
+```
+
+Hàm sắp xếp các cột theo thứ tự
+```{r}
+sort_subgroups <- function(data, characteristic_col, subgroup_col) {
+  # Load the dplyr package
+  library(dplyr)
+  
+  # Ensure that the characteristic column is treated as a factor with its levels in the original order
+  data[[characteristic_col]] <- factor(data[[characteristic_col]], levels = unique(data[[characteristic_col]]))
+  
+  # Arrange the subgroups within each characteristic
+  sorted_data <- data %>%
+    group_by(across(all_of(characteristic_col))) %>%
+    arrange(as.numeric(as.character(data[[subgroup_col]])), .by_group = TRUE)
+  
+  # Return the sorted data
+  return(sorted_data)
+}
+
+
+```
+
+Hàm vẽ Forest plot
+
+```{r}
+draw_forest_plot <- function(results_table) {
+  # Ensure the results_table is not empty
+  if(nrow(results_table) == 0) {
+    cat("No data available for plotting.\n")
+    return()
+  }
+
+  # Calculate the number of variables (or rows to be plotted)
+  num_vars <- nrow(results_table)
+
+  # Set a base height per variable/row
+  base_height_per_var <- 0.5
+  
+  # Calculate the total plot height, accounting for the additional header row
+  total_plot_height <- (num_vars + 1) * base_height_per_var
+
+  # Create the label matrix for the forest plot
+  label_matrix <- with(results_table, {
+    cbind(
+      Variable_Subgroup = paste(Variable, Subgroup_Level, sep = " - "),
+      Mean_CI = sprintf("%.2f (%.2f-%.2f)", Median_Ratio, CI_Lower, CI_Upper),
+      P_Value = sapply(P_Value, function(p) {
+        if(p < 0.001) "p < 0.001" else sprintf("p = %.3f", p)
+      })
+    )
+  })
+
+  # Define the header
+  header <- rbind(c("Variable - Subgroup", "Mean (95% CI)", "P-value"))
+
+  # Combine header with label matrix
+  label_matrix_with_header <- rbind(header, label_matrix)
+
+  # Extract the means and confidence intervals, adding NA for header alignment
+  means <- c(NA, results_table$Median_Ratio)
+  lower_CI <- c(NA, results_table$CI_Lower)
+  upper_CI <- c(NA, results_table$CI_Upper)
+
+  # Generate the forest plot with dynamic height and header
+  forestplot(labeltext = label_matrix_with_header, 
+             mean = means,
+             lower = lower_CI,
+             upper = upper_CI,
+             xlab = expression("Favour left hand" * phantom(10) * "Favour right hand"),
+             title = "Forest plot of Right/Left Index Ratios",
+             zero = 1,  
+             line.margin = .1,
+             new_page = TRUE,
+             col = fpColors(box = "royalblue", line = "darkblue", summary = "royalblue"),
+             boxsize = 0.5,
+             fig.height = total_plot_height)
+}
+
+
+```
+
+```{r}
+# Define the list of subgroups
+subgroup_list <- c("Gender", "Age_stage", "Race", "Typer of skins", "Stress index", "Smoking", "Hypertension","BMI_25_30", "Obesity")
+```
+
+Bảng All
+
+```{r}
+All_table <- create_table_for_subgroup(d, vars, "All")
+All_table<- sort_subgroups(All_table, "Variable", "Subgroup_Level")
+knitr::kable(All_table)
+```
+
+Các đồ thị Forest plot theo dưới nhóm All
+
+```{r}
+for(level in unique(All_table$Subgroup_Level)) {
+    level_table <- All_table %>% dplyr::filter(Subgroup_Level == level)
+    
+    # Explicitly print the plot
+    plot_object <- draw_forest_plot(level_table)
+    print(plot_object)}
+```
+
+
+
+Bảng Gender
+
+```{r}
+Gender_table <- create_table_for_subgroup(d, vars, "Gender")
+Gender_table<- sort_subgroups(Gender_table, "Variable", "Subgroup_Level")
+knitr::kable(Gender_table)
+```
+
+Các đồ thị Forest plot theo dưới nhóm Gender
+
+```{r}
+for(level in unique(Gender_table$Subgroup_Level)) {
+    level_table <- Gender_table %>% dplyr::filter(Subgroup_Level == level)
+    
+    # Explicitly print the plot
+    plot_object <- draw_forest_plot(level_table)
+    print(plot_object)}
+```
+
+
+
+Bảng Age_stage
+```{r}
+Age_stage_table <- create_table_for_subgroup(d, vars, "Age_stage")
+Age_stage_table<- sort_subgroups(Age_stage_table, "Variable", "Subgroup_Level")
+knitr::kable(Age_stage_table)
+```
+
+Các đồ thị Forest plot dưới nhóm Age_stage
+```{r}
+for(level in unique(Age_stage_table$Subgroup_Level)) {
+    level_table <- Age_stage_table %>% dplyr::filter(Subgroup_Level == level)
+    
+    # Explicitly print the plot
+    plot_object <- draw_forest_plot(level_table)
+    print(plot_object)}
+```
+
+
+Bảng Race
+
+```{r}
+Race_table <- create_table_for_subgroup(d, vars, "Race")
+Race_table<- sort_subgroups(Race_table, "Variable", "Subgroup_Level")
+knitr::kable(Race_table)
+```
+
+Các đồ thị Forest plot theo dưới nhóm Race
+
+```{r}
+for(level in unique(Race_table$Subgroup_Level)) {
+    level_table <- Race_table %>% dplyr::filter(Subgroup_Level == level)
+    
+    # Explicitly print the plot
+    plot_object <- draw_forest_plot(level_table)
+    print(plot_object)}
+```
+
+
+Bảng Skin
+
+```{r}
+Skin_table <- create_table_for_subgroup(d, vars, "Typer of skins")
+knitr::kable(Skin_table)
+```
+
+Các đồ thị Forest plot theo dưới nhóm Skin
+
+```{r}
+for(level in unique(Skin_table$Subgroup_Level)) {
+    level_table <- Skin_table %>% dplyr::filter(Subgroup_Level == level)
+    
+    # Explicitly print the plot
+    plot_object <- draw_forest_plot(level_table)
+    print(plot_object)}
+```
+
+
+Bảng Stress
+
+```{r}
+Stress_table <- create_table_for_subgroup(d, vars, "Stress index")
+Stress_table<- sort_subgroups(Stress_table, "Variable", "Subgroup_Level")
+knitr::kable(Stress_table)
+```
+
+Các đồ thị Forest plot theo dưới nhóm Stress
+
+```{r}
+for(level in unique(Stress_table$Subgroup_Level)) {
+    level_table <- Stress_table %>% dplyr::filter(Subgroup_Level == level)
+    
+    # Explicitly print the plot
+    plot_object <- draw_forest_plot(level_table)
+    print(plot_object)}
+```
+
+
+Bảng Smoking
+
+```{r}
+Smoking_table <- create_table_for_subgroup(d, vars, "Smoking")
+Smoking_table<- sort_subgroups(Smoking_table, "Variable", "Subgroup_Level")
+knitr::kable(Smoking_table)
+```
+
+Các đồ thị Forest plot theo dưới nhóm Smoking
+
+```{r}
+for(level in unique(Smoking_table$Subgroup_Level)) {
+    level_table <- Smoking_table %>% dplyr::filter(Subgroup_Level == level)
+    
+    # Explicitly print the plot
+    plot_object <- draw_forest_plot(level_table)
+    print(plot_object)}
+```
+
+
+Bảng Hypertension
+
+```{r}
+Hypertension_table <- create_table_for_subgroup(d, vars, "Hypertension")
+Hypertension_table<- sort_subgroups(Hypertension_table, "Variable", "Subgroup_Level")
+knitr::kable(Hypertension_table)
+```
+
+Các đồ thị Forest plot theo dưới nhóm Hypertension
+
+```{r}
+for(level in unique(Hypertension_table$Subgroup_Level)) {
+    level_table <- Hypertension_table %>% dplyr::filter(Subgroup_Level == level)
+    
+    # Explicitly print the plot
+    plot_object <- draw_forest_plot(level_table)
+    print(plot_object)}
+```
+
+
+Bảng BMI_25_30
+
+```{r}
+BMI_25_30_table <- create_table_for_subgroup(d, vars, "BMI_25_30")
+BMI_25_30_table<- sort_subgroups(BMI_25_30_table, "Variable", "Subgroup_Level")
+knitr::kable(BMI_25_30_table)
+```
+
+Các đồ thị Forest plot theo dưới nhóm BMI_25_30
+
+```{r}
+for(level in unique(BMI_25_30_table$Subgroup_Level)) {
+    level_table <- BMI_25_30_table %>% dplyr::filter(Subgroup_Level == level)
+    
+    # Explicitly print the plot
+    plot_object <- draw_forest_plot(level_table)
+    print(plot_object)}
+```
+
+
+Bảng Obesity
+
+```{r}
+Obesity_table <- create_table_for_subgroup(d, vars, "Obesity")
+Obesity_table<- sort_subgroups(Obesity_table, "Variable", "Subgroup_Level")
+knitr::kable(Obesity_table)
+```
+
+Các đồ thị Forest plot theo dưới nhóm Obesity
+
+```{r}
+for(level in unique(Obesity_table$Subgroup_Level)) {
+    level_table <- Obesity_table %>% dplyr::filter(Subgroup_Level == level)
+    
+    # Explicitly print the plot
+    plot_object <- draw_forest_plot(level_table)
+    print(plot_object)}
+```
+
+
+

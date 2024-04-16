@@ -1,0 +1,398 @@
+---
+title: "Phan tich Forest plot các ratio của trung bình 2 tay"
+author: "Minh"
+date: "2024-02-28"
+output:
+  word_document: default
+  html_document:
+    keep_md: yes
+  pdf_document: default
+params:
+  warning: no
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+```{r}
+options(warn = -1)
+```
+
+
+## Load bộ số liệu và các packages
+
+```{r}
+library(tidyverse)
+library(gtsummary)
+library(rstatix)
+library(readxl)
+library(boot)
+library(forestplot)
+d <- read_excel("C:/Users/Admin/OneDrive/NC_Quangpho/Data_regardless_sleep_new.xlsx")
+
+
+d$BMI_25_30 <- ifelse(d$BMI_index < 25, 1, 
+                         ifelse(d$BMI_index >= 25 & d$BMI_index < 30, 2, 3))
+d$Age_stage <- ifelse(d$Age <= 30, 1, 
+                         ifelse(d$Age >= 30 & d$Age < 40, 2, ifelse(d$Age >= 40 & d$Age < 50, 3,4)))
+d$Gender <- ifelse(d$Gender == 0, "female", ifelse(d$Gender == 1, "male", NA))
+d$Race <- d$`6. Race`
+d <- d %>%
+  mutate(Age_stage = case_when(
+    Age_stage == 1 ~ "Age <30",
+    Age_stage == 2 ~ "Age [30-40)",
+    Age_stage == 3 ~ "Age [40-50)",
+    Age_stage == 4 ~ "Age >=50",
+    TRUE ~ NA_character_  # This line handles any unexpected values
+  ))
+d$Hypertension <- ifelse(d$Hypertension == 0, "No", ifelse(d$Hypertension == 1, "Yes", NA))
+d$`Stress index` <- ifelse(d$`Stress index` == 0, "No", ifelse(d$`Stress index` == 1, "Yes", NA))
+d$Obesity <- ifelse(d$Obesity == 0, "No", ifelse(d$Obesity == 1, "Yes", NA))
+d <- d %>%
+  mutate(BMI_25_30 = case_when(
+    BMI_25_30 == 1 ~ "BMI <25",
+    BMI_25_30 == 2 ~ "BMI [25-30)",
+    BMI_25_30 == 3 ~ "BMI >=30",
+    TRUE ~ NA_character_  # This line handles any unexpected values
+  ))
+```
+
+## So sánh khác biệt về ratio của chỉ số Stress vs non stress theo các biến
+
+```{r}
+
+# List of variables to iterate over
+vars <- c("M", "Kv100", "δ", "T", "A365", "A460", "Anadn", "POM", "A-E", "A-N", "A-M", "A-R", "A-C", "F-E", "F-N", "F-M", "F-R", "F-C")
+subgroups <- c("Gender", "Age_stage", "Race", "Type_of_skins", "Stress_index", "Smoking", "Hypertension","BMI_25_30", "Obesity")
+```
+
+
+Hàm để tạo bảng tổng hợp kết quả và p-value
+
+```{r}
+compare_ratio_means <- function(data, variable, subgroup, level1, level2, n_bootstrap = 1000) {
+  # Filter the data for the two subgroups
+  group1_data <- data[data[[subgroup]] == level1, ]
+  group2_data <- data[data[[subgroup]] == level2, ]
+  
+  # Calculate means for the variable of interest in each subgroup
+  mean_group1 <- mean(group1_data[[variable]], na.rm = TRUE)
+  mean_group2 <- mean(group2_data[[variable]], na.rm = TRUE)
+  
+  # Calculate the ratio of means
+  ratio_means <- mean_group1 / mean_group2
+  
+  # Perform the Wilcoxon test
+  test_result <- wilcox.test(group1_data[[variable]], group2_data[[variable]], paired = FALSE, na.action = na.exclude)
+  
+  # Bootstrap for CI of the ratio
+  bootstrap_ratios <- replicate(n_bootstrap, {
+    sample1 <- sample(group1_data[[variable]], replace = TRUE)
+    sample2 <- sample(group2_data[[variable]], replace = TRUE)
+    mean(sample1, na.rm = TRUE) / mean(sample2, na.rm = TRUE)
+  })
+  
+  CI_lower <- quantile(bootstrap_ratios, probs = 0.025)
+  CI_upper <- quantile(bootstrap_ratios, probs = 0.975)
+  
+  # Construct and return the result as a list
+  return(list(
+    Variable = variable,
+    Subgroup = subgroup,
+    Level1_Mean = mean_group1,
+    Level2_Mean = mean_group2,
+    Ratio = ratio_means,
+    CI_Lower = CI_lower,
+    CI_Upper = CI_upper,
+    P_Value = test_result$p.value
+  ))
+}
+
+
+```
+
+
+```{r}
+create_summary_table <- function(data, variables, subgroup, level1, level2, n_bootstrap = 1000) {
+  # Initialize an empty list to store the results
+  results_list <- list()
+  
+  # Loop through each variable in the variables list
+  for (variable in variables) {
+    # Apply the compare_ratio_means function to each variable
+    result <- compare_ratio_means(data, variable, subgroup, level1, level2, n_bootstrap)
+    # Append the result to the results_list
+    results_list[[variable]] <- result
+  }
+  
+  # Combine all the results into a single data frame
+  results_df <- do.call(rbind, lapply(results_list, as.data.frame))
+  # Optionally, you can convert the row names to a new 'Variable' column if you want
+  results_df$Variable <- rownames(results_df)
+  # Return the final data frame
+  return(results_df)
+}
+
+```
+
+
+
+
+
+Hàm sắp xếp các cột theo thứ tự
+```{r}
+sort_subgroups <- function(data, characteristic_col, subgroup_col) {
+  # Load the dplyr package
+  library(dplyr)
+  
+  # Ensure that the characteristic column is treated as a factor with its levels in the original order
+  data[[characteristic_col]] <- factor(data[[characteristic_col]], levels = unique(data[[characteristic_col]]))
+  
+  # Arrange the subgroups within each characteristic
+  sorted_data <- data %>%
+    group_by(across(all_of(characteristic_col))) %>%
+    arrange(as.numeric(as.character(data[[subgroup_col]])), .by_group = TRUE)
+  
+  # Return the sorted data
+  return(sorted_data)
+}
+
+
+```
+
+Hàm vẽ Forest plot
+
+```{r}
+draw_forest_plot <- function(results_table) {
+  # Ensure the results_table is not empty
+  if(nrow(results_table) == 0) {
+    cat("No data available for plotting.\n")
+    return()
+  }
+
+  # Calculate the number of variables (or rows to be plotted)
+  num_vars <- nrow(results_table)
+
+  # Set a base height per variable/row
+  base_height_per_var <- 0.5
+  
+  # Calculate the total plot height, accounting for the additional header row
+  total_plot_height <- (num_vars + 1) * base_height_per_var
+
+  # Create the label matrix for the forest plot
+  label_matrix <- with(results_table, {
+    cbind(
+      Variable_Subgroup = paste(Variable),
+      Mean_CI = sprintf("%.2f (%.2f-%.2f)", Ratio, CI_Lower, CI_Upper),
+      P_Value = sapply(P_Value, function(p) {
+        if(p < 0.001) "p < 0.001" else sprintf("p = %.3f", p)
+      })
+    )
+  })
+
+  # Define the header
+  header <- rbind(c("Variable", "Mean (95% CI)", "P-value"))
+
+  # Combine header with label matrix
+  label_matrix_with_header <- rbind(header, label_matrix)
+
+  # Extract the means and confidence intervals, adding NA for header alignment
+  means <- c(NA, results_table$Ratio)
+  lower_CI <- c(NA, results_table$CI_Lower)
+  upper_CI <- c(NA, results_table$CI_Upper)
+
+  # Generate the forest plot with dynamic height and header
+  forestplot(labeltext = label_matrix_with_header, 
+             mean = means,
+             lower = lower_CI,
+             upper = upper_CI,
+             xlab = expression("Favour level2 subgroup" * phantom(10) * "Favour level1 subgroup"),
+             title = paste("Forest plot of ", results_table$Subgroup, " Ratios in mean 2 hands", sep=""),
+             zero = 1,  
+             line.margin = .1,
+             new_page = TRUE,
+             col = fpColors(box = "royalblue", line = "darkblue", summary = "royalblue"),
+             boxsize = 0.5,
+             fig.height = total_plot_height)
+}
+
+
+```
+
+```{r}
+variables <- c("M_mean", "Kv100_mean", "δ_mean", "T_mean", "A365_mean", "A460_mean", "Anadn_mean", "POM_mean", "A-E_mean", "A-N_mean", "A-M_mean", "A-R_mean", "A-C_mean", "F-E_mean", "F-N_mean", "F-M_mean", "F-R_mean", "F-C_mean")
+
+```
+
+
+Bảng Stress index Ratio, level1 = "Yes", level2 = "No"
+```{r}
+stress_table <- create_summary_table(data = d, variables = variables, subgroup = "Stress index", level1="Yes", level2="No")
+stress_table %>% knitr::kable()
+```
+
+Forest plot cho Stress index ratio
+
+```{r}
+draw_forest_plot(stress_table)
+```
+
+Bảng Gender Ratio, level1 = "male", level2 = "female"
+
+```{r}
+Gender_table <- create_summary_table(data = d, variables = variables, subgroup = "Gender", level1="male", level2="female")
+Gender_table %>% knitr::kable()
+```
+
+```{r}
+draw_forest_plot(Gender_table)
+```
+
+
+Bảng Smoking ratio, level1 = "Cigarettes, pipe tobacco...", level2 = "Do not smoke"
+```{r}
+Smoking_table <- create_summary_table(data = d, variables = variables, subgroup = "Smoking", level1="Cigarettes, pipe tobacco...", level2="Do not smoke")
+Smoking_table %>% knitr::kable()
+```
+
+```{r}
+draw_forest_plot(Smoking_table)
+```
+
+
+Bảng Smoking ratio, level1 = "Cigarettes, pipe tobacco...", level2 = "Do not smoke"
+```{r}
+Smoking_table <- create_summary_table(data = d, variables = variables, subgroup = "Smoking", level1="Cigarettes, pipe tobacco...", level2="Do not smoke")
+Smoking_table %>% knitr::kable()
+```
+
+```{r}
+draw_forest_plot(Smoking_table)
+```
+
+Bảng Hypertension ratio, level1 = "Yes", level2 = "No"
+```{r}
+Hypertension_table <- create_summary_table(data = d, variables = variables, subgroup = "Hypertension", level1="Yes", level2="No")
+Hypertension_table %>% knitr::kable()
+```
+
+```{r}
+draw_forest_plot(Hypertension_table)
+```
+
+Bảng Obesity ratio, level1 = "Yes", level2 = "No"
+```{r}
+Obesity_table <- create_summary_table(data = d, variables = variables, subgroup = "Obesity", level1="Yes", level2="No")
+Obesity_table %>% knitr::kable()
+```
+
+```{r}
+draw_forest_plot(Obesity_table)
+```
+
+Bảng Race ratio, level1 = "White", level2 = "Asian or Asian British"
+```{r}
+Race1_table <- create_summary_table(data = d, variables = variables, subgroup = "Race", level1="White", level2="Asian or Asian British")
+Race1_table %>% knitr::kable()
+```
+
+```{r}
+draw_forest_plot(Race1_table)
+```
+
+
+Bảng Race ratio, level1 = "Black, African, Caribbean or Black Bristish", level2 = "Asian or Asian British"
+```{r}
+Race2_table <- create_summary_table(data = d, variables = variables, subgroup = "Race", level1="Black, African, Caribbean or Black Bristish", level2="Asian or Asian British")
+Race2_table %>% knitr::kable()
+```
+
+```{r}
+draw_forest_plot(Race2_table)
+```
+
+Bảng BMI ratio, level1 = "BMI <25", level2 = "BMI [25-30)"
+```{r}
+BMI1_table <- create_summary_table(data = d, variables = variables, subgroup = "BMI_25_30", level1="BMI <25", level2="BMI [25-30)")
+BMI1_table %>% knitr::kable()
+```
+
+```{r}
+draw_forest_plot(BMI1_table)
+```
+
+Bảng BMI ratio, level1 = "BMI >=30", level2 = "BMI [25-30)"
+```{r}
+BMI2_table <- create_summary_table(data = d, variables = variables, subgroup = "BMI_25_30", level1="BMI >=30", level2="BMI [25-30)")
+BMI2_table %>% knitr::kable()
+```
+
+```{r}
+draw_forest_plot(BMI2_table)
+```
+
+Bảng Age_stage ratio, level1 = "Age <30", level2= "Age [30-40)"
+
+```{r}
+Agestage1_table <- create_summary_table(data = d, variables = variables, subgroup = "Age_stage", level1="Age <30", level2="Age [30-40)")
+Agestage1_table %>% knitr::kable()
+```
+
+```{r}
+draw_forest_plot(Agestage1_table)
+```
+
+Bảng Age_stage ratio, level1 = "Age <30", level2= "Age [40-50)"
+
+```{r}
+Agestage2_table <- create_summary_table(data = d, variables = variables, subgroup = "Age_stage", level1="Age <30", level2="Age [40-50)")
+Agestage2_table %>% knitr::kable()
+```
+
+```{r}
+draw_forest_plot(Agestage2_table)
+```
+
+Bảng Age_stage ratio, level1 = "Age <30", level2= "Age >=50"
+
+```{r}
+Agestage3_table <- create_summary_table(data = d, variables = variables, subgroup = "Age_stage", level1="Age <30", level2="Age >=50")
+Agestage3_table %>% knitr::kable()
+```
+
+```{r}
+draw_forest_plot(Agestage3_table)
+```
+
+Bảng Age_stage ratio, level1 = "Age [30-40)", level2= "Age >=50"
+
+```{r}
+Agestage4_table <- create_summary_table(data = d, variables = variables, subgroup = "Age_stage", level1="Age [30-40)", level2="Age >=50")
+Agestage4_table %>% knitr::kable()
+```
+
+```{r}
+draw_forest_plot(Agestage4_table)
+```
+
+Bảng Age_stage ratio, level1 = "Age [30-40)", level2= "Age [40-50)"
+
+```{r}
+Agestage5_table <- create_summary_table(data = d, variables = variables, subgroup = "Age_stage", level1="Age [30-40)", level2="Age [40-50)")
+Agestage5_table %>% knitr::kable()
+```
+
+```{r}
+draw_forest_plot(Agestage5_table)
+```
+
+Bảng Age_stage ratio, level1 = "Age [40-50)", level2= "Age >=50"
+
+```{r}
+Agestage6_table <- create_summary_table(data = d, variables = variables, subgroup = "Age_stage", level1="Age [40-50)", level2="Age >=50")
+Agestage6_table %>% knitr::kable()
+```
+
+```{r}
+draw_forest_plot(Agestage6_table)
+```

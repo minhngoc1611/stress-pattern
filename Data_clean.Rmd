@@ -1,0 +1,59 @@
+---
+title: "Data cleaning NC chi Ngoc"
+author: "Minh"
+date: "2024-02-20"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Đầu tiên cần chuyển bảng dữ liệu sang dạng chuẩn
+
+```{r}
+# Load necessary library
+library(readxl)
+library(writexl)
+library(tidyverse)
+library(gtsummary)
+
+
+df <- read_excel("C:/Users/Admin/OneDrive/NC_Quangpho/Data_cNgoc.xlsx")
+
+# Helper function to calculate mode (most frequent value)
+get_mode <- function(v) {
+  # Create a table of values
+  val_table <- table(v)
+  # Find the value with the maximum frequency
+  mode_val <- names(val_table)[which.max(val_table)]
+  return(mode_val)
+}
+
+```
+
+
+```{r}
+# Step 1: Calculate mean for the first group of variables
+# Ensure to rename 'hand' to 'Left or Right' in pivot_wider function
+df_means1 <- df %>%
+  group_by(ID, `Left or Right`) %>%
+  summarise(across(c(Kv100, M, `δ`, T, A365, A460, Anadn, POM, Ae, An, Am, Ar, Ac, F_Ae, F_An, F_Am, F_Ar, F_Ac), mean, na.rm = TRUE), .groups = "drop") %>%
+  pivot_wider(names_from = `Left or Right`, values_from = c(Kv100, M, `δ`, T, A365, A460, Anadn, POM, Ae, An, Am, Ar, Ac, F_Ae, F_An, F_Am, F_Ar, F_Ac), names_glue = "{.value}_{.name}")
+
+df_modes1 <- df %>%
+  group_by(ID) %>%
+  summarise(across(c(`1. Volunteer full name`,Gender, `2. Gender`, Ethnicity, Race, `6. Race`, `Typer of skins`, Birthday, pl_BMI, Weight, Height, BMI_index , Smoking, `Medical History`, time, `Time of testing`, DASS_21, Stress, Anxiety, Depression, Hypertension, Obesity, `Stress index`, Age, Age_stage), get_mode), .groups = "drop")
+
+
+# Ensure the 'by' argument matches the grouped variable name
+df_wide1 <- full_join(df_means1, df_modes1, by = "ID")
+
+# df_wide will now have mean values for the first group and mode values for the second group, by patient and hand.
+```
+
+```{r}
+View(df_wide1)
+write_xlsx(df_wide1, "C:/Users/Admin/OneDrive/NC_Quangpho/Data_regardless_sleep_18_03.xlsx")
+```
+

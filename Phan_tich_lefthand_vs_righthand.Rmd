@@ -1,0 +1,502 @@
+---
+title: "Phan tich Forest plot left hand vs right hand"
+author: "Minh"
+date: "2024-02-28"
+output:
+  word_document: default
+  html_document:
+    keep_md: yes
+  pdf_document: default
+params:
+  warning: no
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+```{r}
+options(warn = -1)
+```
+
+## Load bộ số liệu và các packages
+
+```{r}
+library(tidyverse)
+library(gtsummary)
+library(rstatix)
+library(readxl)
+d <- read_excel("C:/Users/Admin/OneDrive/NC_Quangpho/Data_regardless_sleep_diff.xlsx")
+View(d)
+
+d$BMI_25_30 <- ifelse(d$BMI_index <= 25, 1, 
+                         ifelse(d$BMI_index > 25 & d$BMI_index < 30, 2, 3))
+d$Age_stage <- ifelse(d$Age <= 30, 1, 
+                         ifelse(d$Age >= 30 & d$Age < 40, 2, ifelse(d$Age >= 40 & d$Age < 50, 3,4)))
+```
+
+## So sánh khác biệt về trung bình của chỉ số M theo các biến
+
+Lập hàm so sánh trung bình biến var1 và var2 theo characteristic
+
+```{r}
+calculate_95CI <- function(data) {
+  n <- length(data) # Sample size
+  mean_data <- mean(data, na.rm = TRUE) # Mean of the data
+  sd_data <- sd(data, na.rm = TRUE) # Standard deviation of the data
+  sem <- sd_data / sqrt(n) # Standard error of the mean
+  
+  # Critical t-value for 95% CI
+  t_value <- qt(0.975, df = n-1)
+  
+  # Margin of error
+  margin_error <- t_value * sem
+  
+  # 95% confidence interval
+  ci_lower <- mean_data - margin_error
+  ci_upper <- mean_data + margin_error
+  
+  return(c(CI_lower = ci_lower, CI_upper = ci_upper))
+}
+
+```
+
+
+```{r}
+compare_variables_by_characteristic_with_extended_stats <- function(data, characteristic, var1, var2) {
+  if (!characteristic %in% names(data)) {
+    stop("The specified characteristic does not exist in the dataset.")
+  }
+  
+  if (!(var1 %in% names(data)) || !(var2 %in% names(data))) {
+    stop("One or both variables for comparison do not exist in the dataset.")
+  }
+  
+  unique_values <- unique(data[[characteristic]])
+  results <- list()
+  
+  for (value in unique_values) {
+    subset_data <- data[data[[characteristic]] == value,]
+    
+    # Calculate n, mean, and 95% CI for var1
+    n_var1 <- sum(!is.na(subset_data[[var1]]))
+    mean_var1 <- mean(subset_data[[var1]], na.rm = TRUE)
+    ci_var1 <- calculate_95CI(subset_data[[var1]])
+    
+    # Calculate n, mean, and 95% CI for var2
+    n_var2 <- sum(!is.na(subset_data[[var2]]))
+    mean_var2 <- mean(subset_data[[var2]], na.rm = TRUE)
+    ci_var2 <- calculate_95CI(subset_data[[var2]])
+    
+    # Calculate mean difference and its 95% CI
+    mean_diff <- mean_var1 - mean_var2
+    diff_ci <- calculate_95CI(subset_data[[var1]] - subset_data[[var2]])
+    
+    # Perform Wilcoxon signed-rank test
+    test_result <- wilcox.test(subset_data[[var1]], subset_data[[var2]], paired = TRUE, conf.int = TRUE)
+    
+    results[[as.character(value)]] <- list(
+      Wilcoxon_test = test_result,
+      N_var1 = n_var1,
+      Mean_var1 = mean_var1,
+      CI_var1 = ci_var1,
+      N_var2 = n_var2,
+      Mean_var2 = mean_var2,
+      CI_var2 = ci_var2,
+      Mean_diff = mean_diff,
+      Diff_CI_Lower = diff_ci[1],  # Store lower bound
+      Diff_CI_Upper = diff_ci[2],  # Store upper bound
+      Diff_CI = diff_ci
+    )
+  }
+  
+  return(results)
+}
+
+```
+
+
+### Lập bảng phân tích
+
+```{r}
+create_summary_table_for_vars <- function(data, vars, characteristics) {
+  # Dynamically name columns
+  var1_name_mean <- paste("Mean", vars[1], sep=" ")
+  var2_name_mean <- paste("Mean", vars[2], sep=" ")
+  var1_name_n <- paste("N", vars[1], sep=" ")
+  var2_name_n <- paste("N", vars[2], sep=" ")
+  var1_name_ci <- paste("CI_95%", vars[1], sep=" ")
+  var2_name_ci <- paste("CI_95%", vars[2], sep=" ")
+  mean_diff_name <- paste("Mean_Diff", sep=" ")
+  diff_ci_name <- paste("Diff_CI_95%", sep=" ")
+  diff_ci_lower_name <- paste("Diff_CI_Lower", sep=" ")  # Name for lower bound column
+  diff_ci_upper_name <- paste("Diff_CI_Upper", sep=" ")  # Name for upper bound column
+  
+  # Initialize summary table
+  summary_table <- data.frame(
+    Characteristic = character(),
+    Subgroup = character(),
+    stringsAsFactors = FALSE
+  )
+  
+  summary_table[[var1_name_n]] <- numeric()
+  summary_table[[var2_name_n]] <- numeric()
+  summary_table[[var1_name_mean]] <- numeric()
+  summary_table[[var2_name_mean]] <- numeric()
+  summary_table[[var1_name_ci]] <- character()
+  summary_table[[var2_name_ci]] <- character()
+  summary_table[[mean_diff_name]] <- numeric()
+  summary_table[[diff_ci_name]] <- character()
+  summary_table[[diff_ci_lower_name]] <- numeric()  # Initialize lower bound column
+  summary_table[[diff_ci_upper_name]] <- numeric()  # Initialize upper bound column
+  summary_table[["P_Value"]] <- numeric()
+  
+  for (characteristic in characteristics) {
+    results <- compare_variables_by_characteristic_with_extended_stats(data, characteristic, vars[1], vars[2])
+    
+    for (subgroup in names(results)) {
+      new_row <- data.frame(
+        Characteristic = characteristic,
+        Subgroup = subgroup,
+        stringsAsFactors = FALSE
+      )
+      
+      new_row[[var1_name_n]] <- results[[subgroup]]$N_var1
+      new_row[[var2_name_n]] <- results[[subgroup]]$N_var2
+      new_row[[var1_name_mean]] <- results[[subgroup]]$Mean_var1
+      new_row[[var1_name_ci]] <- paste("(", round(results[[subgroup]]$CI_var1[1], 2), ",", round(results[[subgroup]]$CI_var1[2], 2), ")", sep="")
+      new_row[[var2_name_mean]] <- results[[subgroup]]$Mean_var2
+      new_row[[var2_name_ci]] <- paste("(", round(results[[subgroup]]$CI_var2[1], 2), ",", round(results[[subgroup]]$CI_var2[2], 2), ")", sep="")
+      new_row[[mean_diff_name]] <- results[[subgroup]]$Mean_diff
+      new_row[[diff_ci_name]] <- paste("(", round(results[[subgroup]]$Diff_CI[1], 2), ",", round(results[[subgroup]]$Diff_CI[2], 2), ")", sep="")
+      new_row[[diff_ci_lower_name]] <- results[[subgroup]]$Diff_CI_Lower  # Add lower bound value
+      new_row[[diff_ci_upper_name]] <- results[[subgroup]]$Diff_CI_Upper  # Add upper bound value
+      new_row[["P_Value"]] <- results[[subgroup]]$Wilcoxon_test$p.value
+      
+      summary_table <- rbind(summary_table, new_row)
+    }
+  }
+  
+  return(summary_table)
+  
+}
+
+
+```
+
+Hàm vẽ forest plot
+
+```{r}
+library(tibble)
+library(ggplot2)
+library(forestplot)
+library(grid)
+
+draw_forest_plot <- function(data) {
+  
+
+  
+  # Prepare the data (the same way as with a data frame)
+  data$Label <- paste(data$Characteristic, data$Subgroup, sep = " - ")
+  
+  # Generate the forest plot
+  forestplot(labeltext = data$Label,
+             mean = data$Mean_Diff,
+             lower = data$Diff_CI_Lower,
+             upper = data$Diff_CI_Upper,
+             zero = 0,
+             xlab = expression("Favour left hand" * phantom(0) * "Favour right hand"),
+             clip = c(min(data$Diff_CI_Lower), max(data$Diff_CI_Upper)),
+             xticks = seq(from = round(min(data$Diff_CI_Lower)), to = round(max(data$Diff_CI_Upper))),
+             txt_gp = fpTxtGp(label = gpar(cex = 1)))
+             
+}
+
+```
+
+Hàm sắp xếp các cột theo thứ tự
+```{r}
+sort_subgroups <- function(data, characteristic_col, subgroup_col) {
+  # Load the dplyr package
+  library(dplyr)
+  
+  # Ensure that the characteristic column is treated as a factor with its levels in the original order
+  data[[characteristic_col]] <- factor(data[[characteristic_col]], levels = unique(data[[characteristic_col]]))
+  
+  # Arrange the subgroups within each characteristic
+  sorted_data <- data %>%
+    group_by(across(all_of(characteristic_col))) %>%
+    arrange(as.numeric(as.character(data[[subgroup_col]])), .by_group = TRUE)
+  
+  # Return the sorted data
+  return(sorted_data)
+}
+
+
+```
+
+
+Bảng phân tích theo từng characteristic
+
+```{r}
+characteristics <- c("Gender", "Age_stage", "Race", "Type of skins", "Stress index", "Smoking", "Hypertension","BMI_25_30", "Obesity", "All")
+List_var <- c("M", "Kv100", "δ", "T", "A365", "A460", "Anadn", "POM", "Ae", "An", "Am", "Ar", "Ac", "F_Ae", "F_An", "F_Am", "F_Ar", "F_Ac" )
+var_M <- c("M_right", "M_left")
+var_Kv100 <- c("Kv100_right", "Kv100_left")
+var_δ <- c("δ_right", "δ_left")
+var_T <- c("T_right", "T_left")
+var_A365 <- c("A365_right", "A365_left")
+var_A460 <- c("A460_right", "A460_left")
+var_Anadn <- c("Anadn_right", "Anadn_left")
+var_POM <- c("POM_right", "POM_left")
+var_Ae <- c("Ae_right", "Ae_left")
+var_An <- c("An_right", "An_left")
+var_Am <- c("Am_right", "Am_left")
+var_Ar <- c("Ar_right", "Ar_left")
+var_Ac <- c("Ac_right", "Ac_left")
+var_F_Ae <- c("F_Ae_right", "F_Ae_left")
+var_F_An <- c("F_An_right", "F_An_left")
+var_F_Am <- c("F_Am_right", "F_Am_left")
+var_F_Ar <- c("F_Ar_right", "F_Ar_left")
+var_F_Ac <- c("F_Ac_right", "F_Ac_left")
+
+```
+
+
+
+
+Bảng M theo các subgroup:
+
+```{r}
+M_table <- create_summary_table_for_vars(d, var_M, characteristics)
+M_table <- sort_subgroups(M_table, "Characteristic", "Subgroup")
+M_table %>%select(-Diff_CI_Lower, -Diff_CI_Upper) %>% knitr::kable()
+```
+Đồ thị Forest plot theo biến M
+```{r}
+draw_forest_plot(M_table)
+```
+
+
+Bảng Kv100 theo các subgroup:
+
+```{r}
+Kv100_table <- create_summary_table_for_vars(d, var_Kv100, characteristics)
+Kv100_table<-sort_subgroups(Kv100_table, "Characteristic", "Subgroup") 
+Kv100_table %>% select(-Diff_CI_Lower, -Diff_CI_Upper) %>% knitr::kable()
+```
+Đồ thị Forest plot theo biến Kv100
+```{r}
+draw_forest_plot(Kv100_table)
+```
+
+
+Bảng δ theo các subgroup:
+
+```{r}
+δ_table <- create_summary_table_for_vars(d, var_δ, characteristics)
+δ_table<-sort_subgroups(δ_table, "Characteristic", "Subgroup") 
+δ_table %>% select(-Diff_CI_Lower, -Diff_CI_Upper) %>% knitr::kable()
+```
+Đồ thị Forest plot theo biến δ
+```{r}
+draw_forest_plot(δ_table)
+```
+
+
+Bảng T theo các subgroup:
+
+```{r}
+T_table <- create_summary_table_for_vars(d, var_T, characteristics)
+T_table<-sort_subgroups(T_table, "Characteristic", "Subgroup") 
+T_table %>% select(-Diff_CI_Lower, -Diff_CI_Upper) %>% knitr::kable()
+```
+Đồ thị Forest plot theo biến T
+```{r}
+draw_forest_plot(T_table)
+```
+
+
+Bảng A365 theo các subgroup:
+
+```{r}
+A365_table <- create_summary_table_for_vars(d, var_A365, characteristics)
+A365_table<-sort_subgroups(A365_table, "Characteristic", "Subgroup") 
+A365_table %>% select(-Diff_CI_Lower, -Diff_CI_Upper) %>% knitr::kable()
+```
+Đồ thị Forest plot theo biến A365
+```{r}
+draw_forest_plot(A365_table)
+```
+
+
+Bảng A460 theo các subgroup:
+
+```{r}
+A460_table <- create_summary_table_for_vars(d, var_A460, characteristics)
+A460_table<-sort_subgroups(A460_table, "Characteristic", "Subgroup") 
+A460_table %>% select(-Diff_CI_Lower, -Diff_CI_Upper) %>% knitr::kable()
+```
+Đồ thị Forest plot theo biến A460
+```{r}
+draw_forest_plot(A460_table)
+```
+
+
+Bảng Anadn theo các subgroup:
+
+```{r}
+Anadn_table <- create_summary_table_for_vars(d, var_Anadn, characteristics)
+Anadn_table<-sort_subgroups(Anadn_table, "Characteristic", "Subgroup") 
+Anadn_table %>% select(-Diff_CI_Lower, -Diff_CI_Upper) %>% knitr::kable()
+```
+Đồ thị Forest plot theo biến Anadn
+```{r}
+draw_forest_plot(Anadn_table)
+```
+
+
+Bảng POM theo các subgroup:
+
+```{r}
+POM_table <- create_summary_table_for_vars(d, var_POM, characteristics)
+POM_table<-sort_subgroups(POM_table, "Characteristic", "Subgroup") 
+POM_table %>% select(-Diff_CI_Lower, -Diff_CI_Upper) %>% knitr::kable()
+```
+Đồ thị Forest plot theo biến POM
+```{r}
+draw_forest_plot(POM_table)
+```
+
+
+Bảng Ae theo các subgroup:
+
+```{r}
+Ae_table <- create_summary_table_for_vars(d, var_Ae, characteristics)
+Ae_table<-sort_subgroups(Ae_table, "Characteristic", "Subgroup") 
+Ae_table %>% select(-Diff_CI_Lower, -Diff_CI_Upper) %>% knitr::kable()
+```
+Đồ thị Forest plot theo biến Ae
+```{r}
+draw_forest_plot(Ae_table)
+```
+
+
+Bảng An theo các subgroup:
+
+```{r}
+An_table <- create_summary_table_for_vars(d, var_An, characteristics)
+An_table<-sort_subgroups(An_table, "Characteristic", "Subgroup") 
+An_table %>% select(-Diff_CI_Lower, -Diff_CI_Upper) %>% knitr::kable()
+```
+Đồ thị Forest plot theo biến An
+```{r}
+draw_forest_plot(An_table)
+```
+
+
+Bảng Am theo các subgroup:
+
+```{r}
+Am_table <- create_summary_table_for_vars(d, var_Am, characteristics)
+Am_table<-sort_subgroups(Am_table, "Characteristic", "Subgroup") 
+Am_table %>% select(-Diff_CI_Lower, -Diff_CI_Upper) %>% knitr::kable()
+```
+Đồ thị Forest plot theo biến Am
+```{r}
+draw_forest_plot(Am_table)
+```
+
+
+Bảng Ar theo các subgroup:
+
+```{r}
+Ar_table <- create_summary_table_for_vars(d, var_Ar, characteristics)
+Ar_table<-sort_subgroups(Ar_table, "Characteristic", "Subgroup") 
+Ar_table %>% select(-Diff_CI_Lower, -Diff_CI_Upper) %>% knitr::kable()
+```
+Đồ thị Forest plot theo biến Ar
+```{r}
+draw_forest_plot(Ar_table)
+```
+
+
+Bảng Ac theo các subgroup:
+
+```{r}
+Ac_table <- create_summary_table_for_vars(d, var_Ac, characteristics)
+Ac_table<-sort_subgroups(Ac_table, "Characteristic", "Subgroup") 
+Ac_table %>% select(-Diff_CI_Lower, -Diff_CI_Upper) %>% knitr::kable()
+```
+Đồ thị Forest plot theo biến Ac
+```{r}
+draw_forest_plot(Ac_table)
+```
+
+
+Bảng F_Ae theo các subgroup:
+
+```{r}
+F_Ae_table <- create_summary_table_for_vars(d, var_F_Ae, characteristics)
+F_Ae_table<-sort_subgroups(F_Ae_table, "Characteristic", "Subgroup") 
+F_Ae_table %>% select(-Diff_CI_Lower, -Diff_CI_Upper) %>% knitr::kable()
+```
+Đồ thị Forest plot theo biến F_Ae
+```{r}
+draw_forest_plot(F_Ae_table)
+```
+
+
+Bảng F_An theo các subgroup:
+
+```{r}
+F_An_table <- create_summary_table_for_vars(d, var_F_An, characteristics)
+F_An_table<-sort_subgroups(F_An_table, "Characteristic", "Subgroup") 
+F_An_table %>% select(-Diff_CI_Lower, -Diff_CI_Upper) %>% knitr::kable()
+```
+Đồ thị Forest plot theo biến F_An
+```{r}
+draw_forest_plot(F_An_table)
+```
+
+
+Bảng F_Am theo các subgroup:
+
+```{r}
+F_Am_table <- create_summary_table_for_vars(d, var_F_Am, characteristics)
+F_Am_table<-sort_subgroups(F_Am_table, "Characteristic", "Subgroup") 
+F_Am_table %>% select(-Diff_CI_Lower, -Diff_CI_Upper) %>% knitr::kable()
+```
+Đồ thị Forest plot theo biến F_Am
+```{r}
+draw_forest_plot(F_Am_table)
+```
+
+
+Bảng F_Ar theo các subgroup:
+
+```{r}
+F_Ar_table <- create_summary_table_for_vars(d, var_F_Ar, characteristics)
+F_Ar_table<-sort_subgroups(F_Ar_table, "Characteristic", "Subgroup") 
+F_Ar_table %>% select(-Diff_CI_Lower, -Diff_CI_Upper) %>% knitr::kable()
+```
+Đồ thị Forest plot theo biến F_Ar
+```{r}
+draw_forest_plot(F_Ar_table)
+```
+
+
+Bảng F_Ac theo các subgroup:
+
+```{r}
+F_Ac_table <- create_summary_table_for_vars(d, var_F_Ac, characteristics)
+F_Ac_table<-sort_subgroups(F_Ac_table, "Characteristic", "Subgroup") 
+F_Ac_table %>% select(-Diff_CI_Lower, -Diff_CI_Upper) %>% knitr::kable()
+```
+Đồ thị Forest plot theo biến F_Ac
+```{r}
+draw_forest_plot(F_Ac_table)
+```
+
+
+
+

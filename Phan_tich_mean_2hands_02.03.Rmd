@@ -1,0 +1,408 @@
+---
+title: "Phan tich mean hand Wilcox test"
+author: "Minh"
+date: "2024-03-25"
+output:
+  html_document:
+    keep_md: yes
+  pdf_document: default
+  word_document: default
+params:
+  warning: no
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+```{r}
+options(warn = -1)
+```
+
+## Load bộ số liệu và các packages
+
+```{r}
+library(tidyverse)
+library(gtsummary)
+library(rstatix)
+library(readxl)
+d <- read_excel("C:/Users/Admin/OneDrive/NC_Quangpho/Data_regardless_sleep_18_03.xlsx")
+View(d)
+
+d$BMI_25_30 <- ifelse(d$BMI_index < 25, 1, 
+                         ifelse(d$BMI_index >= 25 & d$BMI_index < 30, 2, 3))
+d$Age_stage <- ifelse(d$Age <= 30, 1, 
+                         ifelse(d$Age >= 30 & d$Age < 40, 2, ifelse(d$Age >= 40 & d$Age < 50, 3,4)))
+d$Gender <- ifelse(d$Gender == 0, "female", ifelse(d$Gender == 1, "male", NA))
+d$Race <- d$`6. Race`
+d <- d %>%
+  mutate(Age_stage = case_when(
+    Age_stage == 1 ~ "Age <30",
+    Age_stage == 2 ~ "Age [30-40)",
+    Age_stage == 3 ~ "Age [40-50)",
+    Age_stage == 4 ~ "Age >=50",
+    TRUE ~ NA_character_  # This line handles any unexpected values
+  ))
+d$Hypertension <- ifelse(d$Hypertension == 0, "No", ifelse(d$Hypertension == 1, "Yes", NA))
+d$`Stress index` <- ifelse(d$`Stress index` == 0, "No", ifelse(d$`Stress index` == 1, "Yes", NA))
+d$Obesity <- ifelse(d$Obesity == 0, "No", ifelse(d$Obesity == 1, "Yes", NA))
+d <- d %>%
+  mutate(BMI_25_30 = case_when(
+    BMI_25_30 == 1 ~ "BMI <25",
+    BMI_25_30 == 2 ~ "BMI [25-30)",
+    BMI_25_30 == 3 ~ "BMI >=30",
+    TRUE ~ NA_character_  # This line handles any unexpected values
+  ))
+d$Smoking <- ifelse(d$Smoking == "Do not smoke", "Non smoker", ifelse(d$Smoking == "Cigarettes, pipe tobacco...", "Smoker", NA))
+d$Migraine <- ifelse(d$Migraine == 0, "No migraine", ifelse(d$Migraine == 1, "Migraine", NA))
+```
+
+## So sánh khác biệt về trung bình của chỉ số 2 tay theo các subgroup
+
+
+Tạo hàm tính 95%CI
+
+```{r}
+library(dplyr)
+
+calculate_95CI <- function(data, variable) {
+  ci_lower <- quantile(data[[variable]], probs = 0.025, na.rm = TRUE)
+  ci_upper <- quantile(data[[variable]], probs = 0.975, na.rm = TRUE)
+  
+  return(c(CI_lower = ci_lower, CI_upper = ci_upper))
+}
+
+```
+
+Tạo hàm so sánh trung bình bằng Wilcox.test nếu subgroup có 2 level
+```{r}
+compare_means <- function(data, subgroup, variable) {
+  # Split data into subgroups
+  subgroup_levels <- unique(data[[subgroup]])
+  results <- data.frame(Subgroup = subgroup_levels, n = NA, Mean = NA, CI_lower = NA, CI_upper = NA)
+
+  # Loop through each subgroup to calculate mean, n, and 95% CI
+  for (i in 1:length(subgroup_levels)) {
+    subgroup_data <- data[data[[subgroup]] == subgroup_levels[i], variable, drop = FALSE]
+    n <- nrow(subgroup_data)
+    mean_value <- mean(subgroup_data[[variable]], na.rm = TRUE)
+    ci <- calculate_95CI(data, variable)
+    
+    results[i, "n"] <- n
+    results[i, "Mean"] <- mean_value
+    results[i, "CI_lower"] <- ci["CI_lower"]
+    results[i, "CI_upper"] <- ci["CI_upper"]
+  }
+  
+  # Check if there are more than two subgroups
+  if (length(subgroup_levels) > 2) {
+    results$P_Value <- NA
+  } else if (length(subgroup_levels) == 2) {
+    # If exactly two subgroups, perform Wilcoxon signed-rank test and add p-values to the results
+    test_result <- wilcox.test(data[[variable]] ~ data[[subgroup]], data = data)
+    results$P_Value <- rep(test_result$p.value, nrow(results))
+  } else {
+    # If only one subgroup, no comparison is needed
+    results$P_Value <- NA
+    message("Only one subgroup detected. No comparison needed.")
+  }
+  
+  return(results)
+}
+
+```
+
+Tạo hàm so sánh bắt cặp các trung bình bằng Wilcox.pairwise test nếu group có >2 level
+
+```{r}
+perform_pairwise_wilcox <- function(data, group_list, variable ) {
+  results_list <- list()
+  
+  for (group in group_list) {
+    group_data <- data[[group]]
+    unique_groups <- unique(group_data)
+    
+    if (length(unique_groups) > 2) {
+      # Generate all unique pairs
+      group_pairs <- combn(unique_groups, 2, simplify = FALSE)
+      
+      # Initialize an empty data frame to store results
+      group_results <- data.frame(Group1 = character(), Group2 = character(), P_Value = numeric(), stringsAsFactors = FALSE)
+      
+      for (pair in group_pairs) {
+        # Subset data for each group in the pair
+        data1 <- data[group_data == pair[1], variable, drop = FALSE]
+        data2 <- data[group_data == pair[2], variable, drop = FALSE]
+        
+        # Perform Wilcoxon test
+        test_result <- wilcox.test(data1[[variable]], data2[[variable]])
+        
+        # Store the results
+        group_results <- rbind(group_results, data.frame(Group1 = pair[1], Group2 = pair[2], P_Value = test_result$p.value, stringsAsFactors = FALSE))
+      }
+      
+      # Add group information to the results and make it the first column
+      group_results <- cbind(Group = group, group_results)
+      
+      results_list[[group]] <- group_results
+    } else {
+      message(paste("Group", group, "does not have more than 2 unique levels. Skipping."))
+    }
+  }
+  
+  # Combine all results into a single dataframe
+  final_results <- do.call(rbind, results_list)
+  # Adjust the row names to avoid duplication
+  rownames(final_results) <- NULL
+  
+  return(final_results)
+}
+
+```
+
+
+Tạo hàm vẽ Forest plot
+
+```{r}
+draw_forest_plot <- function(final_table) {
+  # Create a unique identifier for each row combining Subgroup and Subgroup_Category
+  final_table$Identifier <- with(final_table, paste(Subgroup, Subgroup_Category, sep = ": "))
+
+  # Convert Identifier to factor for proper ordering in the plot
+  final_table$Identifier <- factor(final_table$Identifier, levels = unique(final_table$Identifier))
+  
+  name_of_plot <- substr(names(final_table)[3], 3, nchar(names(final_table)[3]))
+  # Create the Forest plot
+  ggplot(final_table, aes(x = Mean, y = Identifier)) +
+    geom_point(shape=15, size=3, color= "black") +
+    geom_errorbarh(aes(xmin = CI_lower, xmax = CI_upper), height = 0.2) +
+    labs(x = "Mean", y = "Subgroup Category", title = paste("Forest Plot for", name_of_plot)) + 
+    theme_minimal() +
+    theme(axis.text.y = element_text(size = 7))  # Adjust text size for clarity if needed
+}
+
+```
+
+
+Hàm để tạo bảng 
+
+```{r}
+generate_final_table <- function(data,subgroup_list, variable ) {
+  final_results <- list()
+  
+  for (subgroup in subgroup_list) {
+    subgroup_result <- compare_means(data, subgroup, variable )
+    colnames(subgroup_result)[colnames(subgroup_result) == "n"] <- paste("n", variable, sep = "_")
+    # Add a column to indicate the subgroup category and make it the first column
+    subgroup_result$Subgroup_Category <- subgroup
+    subgroup_result <- subgroup_result[, c("Subgroup_Category", setdiff(names(subgroup_result), "Subgroup_Category"))]
+    
+    final_results[[subgroup]] <- subgroup_result
+  }
+  
+  # Combine all results into a single dataframe
+  final_table <- do.call(rbind, final_results)
+  # Adjusting the row names to avoid duplication
+  rownames(final_table) <- NULL
+  
+  # Sort final_table by Subgroup_Category first, then Subgroup
+  final_table <- final_table[order(final_table$Subgroup_Category, final_table$Subgroup), ]
+  
+  return(final_table)
+}
+
+```
+
+
+Sub group list = "Gender", "Race", "Smoking", "Obesity", "BMI_25_30", "Stress index", "Type of skins", "Hypertension", "Age_stage", 
+
+```{r}
+subgroup_list <- c("Migraine", "Gender", "Age_stage", "Race","Typer of skins", "Stress index", "Smoking", "DASS_21",  "Stress" , "Anxiety", "Hypertension", "BMI_25_30", "Obesity" )
+```
+```{r}
+List_var <- c("M_mean", "Kv100_mean", "δ_mean", "T_mean", "A365_mean", "A460_mean", "Anadn_mean", "POM_mean", "A-E_mean", "A-N_mean", "A-M_mean", "A-R_mean", "A-C_mean", "F-E_mean", "F-N_mean", "F-M_mean", "F-R_mean", "F-C_mean")
+```
+
+## Tạo bảng và Forest plot với biến M_mean
+```{r}
+generate_final_table(d, "M_mean", subgroup_list) %>% knitr::kable()
+```
+###Wilcox pairwise test cho các sub group có >2 level
+```{r}
+perform_pairwise_wilcox(d, "M_mean", subgroup_list) %>% knitr::kable()
+```
+
+
+
+
+
+
+## Tạo bảng và Forest plot với biến Kv100_mean
+```{r}
+generate_final_table(d, "Kv100_mean", subgroup_list) %>% knitr::kable()
+```
+###Wilcox pairwise test cho các sub group có >2 level
+```{r}
+perform_pairwise_wilcox(d, "Kv100_mean", subgroup_list) %>% knitr::kable()
+```
+
+
+## Tạo bảng và Forest plot với biến δ_mean
+```{r}
+generate_final_table(d, "δ_mean", subgroup_list) %>% knitr::kable()
+```
+###Wilcox pairwise test cho các sub group có >2 level
+```{r}
+perform_pairwise_wilcox(d, "δ_mean", subgroup_list) %>% knitr::kable()
+```
+
+
+## Tạo bảng và Forest plot với biến T_mean
+```{r}
+generate_final_table(d, "T_mean", subgroup_list) %>% knitr::kable()
+```
+###Wilcox pairwise test cho các sub group có >2 level
+```{r}
+perform_pairwise_wilcox(d, "T_mean", subgroup_list) %>% knitr::kable()
+```
+
+
+## Tạo bảng và Forest plot với biến A365_mean
+```{r}
+generate_final_table(d, "A365_mean", subgroup_list) %>% knitr::kable()
+```
+###Wilcox pairwise test cho các sub group có >2 level
+```{r}
+perform_pairwise_wilcox(d, "A365_mean", subgroup_list) %>% knitr::kable()
+```
+
+
+## Tạo bảng và Forest plot với biến A460_mean
+```{r}
+generate_final_table(d, "A460_mean", subgroup_list) %>% knitr::kable()
+```
+###Wilcox pairwise test cho các sub group có >2 level
+```{r}
+perform_pairwise_wilcox(d, "A460_mean", subgroup_list) %>% knitr::kable()
+```
+
+
+## Tạo bảng và Forest plot với biến Anadn_mean
+```{r}
+generate_final_table(d, "Anadn_mean", subgroup_list) %>% knitr::kable()
+```
+###Wilcox pairwise test cho các sub group có >2 level
+```{r}
+perform_pairwise_wilcox(d, "Anadn_mean", subgroup_list) %>% knitr::kable()
+```
+
+
+## Tạo bảng và Forest plot với biến POM_mean
+```{r}
+generate_final_table(d, "POM_mean", subgroup_list) %>% knitr::kable()
+```
+###Wilcox pairwise test cho các sub group có >2 level
+```{r}
+perform_pairwise_wilcox(d, "POM_mean", subgroup_list) %>% knitr::kable()
+```
+
+
+
+## Tạo bảng và Forest plot với biến A-E_mean
+```{r}
+generate_final_table(d, "A-E_mean", subgroup_list) %>% knitr::kable()
+```
+###Wilcox pairwise test cho các sub group có >2 level
+```{r}
+perform_pairwise_wilcox(d, "A-E_mean", subgroup_list) %>% knitr::kable()
+```
+
+
+## Tạo bảng và Forest plot với biến A-N_mean
+```{r}
+generate_final_table(d, "A-N_mean", subgroup_list) %>% knitr::kable()
+```
+###Wilcox pairwise test cho các sub group có >2 level
+```{r}
+perform_pairwise_wilcox(d, "A-N_mean", subgroup_list) %>% knitr::kable()
+```
+
+
+## Tạo bảng và Forest plot với biến A-M_mean
+```{r}
+generate_final_table(d, "A-M_mean", subgroup_list) %>% knitr::kable()
+```
+###Wilcox pairwise test cho các sub group có >2 level
+```{r}
+perform_pairwise_wilcox(d, "A-M_mean", subgroup_list) %>% knitr::kable()
+```
+
+## Tạo bảng và Forest plot với biến A-R_mean
+```{r}
+generate_final_table(d, "A-R_mean", subgroup_list) %>% knitr::kable()
+```
+###Wilcox pairwise test cho các sub group có >2 level
+```{r}
+perform_pairwise_wilcox(d, "A-R_mean", subgroup_list) %>% knitr::kable()
+```
+
+
+## Tạo bảng và Forest plot với biến A-C_mean
+```{r}
+generate_final_table(d, "A-C_mean", subgroup_list) %>% knitr::kable()
+```
+###Wilcox pairwise test cho các sub group có >2 level
+```{r}
+perform_pairwise_wilcox(d, "A-C_mean", subgroup_list) %>% knitr::kable()
+```
+
+
+## Tạo bảng và Forest plot với biến F-E_mean
+```{r}
+generate_final_table(d, "F-E_mean", subgroup_list) %>% knitr::kable()
+```
+###Wilcox pairwise test cho các sub group có >2 level
+```{r}
+perform_pairwise_wilcox(d, "F-E_mean", subgroup_list) %>% knitr::kable()
+```
+
+## Tạo bảng và Forest plot với biến F-N_mean
+```{r}
+generate_final_table(d, "F-N_mean", subgroup_list) %>% knitr::kable()
+```
+###Wilcox pairwise test cho các sub group có >2 level
+```{r}
+perform_pairwise_wilcox(d, "F-N_mean", subgroup_list) %>% knitr::kable()
+```
+
+
+## Tạo bảng và Forest plot với biến F-M_mean
+```{r}
+generate_final_table(d, "F-M_mean", subgroup_list) %>% knitr::kable()
+```
+###Wilcox pairwise test cho các sub group có >2 level
+```{r}
+perform_pairwise_wilcox(d, "F-M_mean", subgroup_list) %>% knitr::kable()
+```
+
+
+## Tạo bảng và Forest plot với biến F-R_mean
+```{r}
+generate_final_table(d, "F-R_mean", subgroup_list) %>% knitr::kable()
+```
+###Wilcox pairwise test cho các sub group có >2 level
+```{r}
+perform_pairwise_wilcox(d, "F-R_mean", subgroup_list) %>% knitr::kable()
+```
+
+
+## Tạo bảng và Forest plot với biến F-C_mean
+```{r}
+generate_final_table(d, "F-C_mean", subgroup_list) %>% knitr::kable()
+```
+###Wilcox pairwise test cho các sub group có >2 level
+```{r}
+perform_pairwise_wilcox(d, "F-C_mean", subgroup_list) %>% knitr::kable()
+```
+
+
+
